@@ -112,7 +112,7 @@ class MeAction < Pudl::BaseAction
       puts "#{entity.name} #{entity.surname}"
     end
 
-    # Perform a dry run; don't actually do anything but pring
+    # Perform a dry run; don't actually do anything but print
     def dry_run
       puts "Output name: #{entity.name} and surname: #{entity.surname}"
     end
@@ -203,6 +203,7 @@ pipeline "My Pipeline" do
     end
   end
 end
+```
 
 ## Additional Context
 
