@@ -25,25 +25,25 @@ pipeline = Pudl.parse "mypipeline.rb"
 ``` ruby
 pipeline 'My Pipeline' do
 
-    task :first_task do
+  task :first_task do
     # Put actions in here
-    end
+  end
 
-    task :second_task do
+  task :second_task do
     after :first_task
-    end
+  end
 
-    task :third_task do
+  task :third_task do
     after :first_task
-    end
+  end
 
-    task :fourth_task do
+  task :fourth_task do
     after :first_task, :third_task
-    end
+  end
 
-    on_error do
+  on_error do
     # Put error cleanup actions here
-    end
+  end
 
 end
 ```
@@ -65,133 +65,100 @@ The #run method will calculate the optimal ordering of tasks to ensure
 dependencies are satisfied (more on those later) and execute all the tasks,
 parallelising where possible.
 
-## Explain Plan
+## Dry Run
 
-In order to find out what the optimal grouping of tasks is that the run
-method discovered, call instead the Pudl::Pipeline#explain method. This will
-return an array of arrays containing groupings of tasks in the order they
-should be run.
-
-Executing Pudl::Pipeline#explain provides the following explain plan:
+If you want to find out what the pipeline would do, but not actually do it,
+use the #dry\_run method instead.
 
 ``` ruby
-[
-  [ first_task ],
-  [ second_task, third_task ],
-  [ fourth_task ]
-]
+runner = pipeline.runner
+runner.dry_run
 ```
 
-Each group is a set of concurrent tasks. The first and third group only
-contain one, but the second group has two, meaning that `:second_task` and
-`:third_task` can be run concurrently because they do not depend on each other.
-
-The Pudl::Pipeline#explain method also catches unreachable tasks and
-recursive dependencies so you can be sure that the plan is sane.
-
-A similar tool is Pudl::Pipeline#dry_run, which outputs a description of the
-pipeline, each task and each action explaining exactly what the configured
-parameters will do.
-
-```
-Pipeline:My Pipeline
-  Task:first_task
-  Task:second_task
-```
+This will output what the task would have done, and what values it would
+have used, so you can ensure the ordering is correct.
 
 # Creating An Action
 
-All actions are created as subclasses of the Pudl::Action class. A basic
-task that does nothing but output its name may look like this:
+All actions are created as subclasses of the Pudl::BaseAction class, and
+contains a Dsl and Runner class that handles parsing and execution
+respectively. A basic task that does nothing but output its name may look
+like this:
 
 ``` ruby
-class MeAction < Pudl::Action
+class MeAction < Pudl::BaseAction
 
-  setter :surname
+  # Define attributes of this action
+  attr_accessor :surname
 
-  def run
-    case @action
-    when :print
-      puts "#{@name} #{@surname}"
+  # Define the DSL parser for this action
+  class Dsl < BaseAction::Dsl
+
+    # There are many types of propery
+    property_single :surname do |n|
+
+      # entity refers to an instance of MeAction
+      entity.surname = n
     end
   end
 
-  def dry_run indent=""
-    case @action
-    when :print
-      puts "#{indent}#{basename}: Print name [#{@name}] with surname [#{surname}]"
+  # Define the Runner class for this action
+  class Runner < BaseAction::Runner
+
+    # The run method should actually perform the action
+    def run
+      # entity refers to an instance of MeAction
+      # all entities have a name
+      puts "#{entity.name} #{entity.surname}"
+    end
+
+    # Perform a dry run; don't actually do anything but pring
+    def dry_run
+      puts "Output name: #{entity.name} and surname: #{entity.surname}"
     end
   end
+
+  # Set the DSL and Runner classes for this action
+  dsl_class Dsl
+  runner_class Runner
 
 end
 ```
 
-Including this action in the DSL means adding it to the pipeline:
+Including this action in the DSL means adding it to the Pudl DSL:
 
 ``` ruby
-acts = {
-  me: MeAction
-}
-pipeline = Pudl::Pipeline.new "My Pipeline", context, actions: acts do
+Pudl::add_actions( { me: MeAction } )
+```
+
+It can then be used in a pipeline:
+
+``` ruby
+pipeline "My Pipeline" do
   task :first_task do
     me "Joe" do
-      action :print
       surname "Bloggs"
     end
   end
 end
-pipeline.dry_run
-```
-
-The output appears thus:
-
-```
-Pipeline:My Pipeline
-  Task:first_task
-    MeAction: Print name [Joe] with surname [Bloggs]
 ```
 
 Running the pipeline results in the output `Joe Bloggs`, as you might expect.
 
-Read Pudl::Action for more information about validation and other types of
-command that can be added to an action.
-
 # Context
 
-Each Pudl class accepts a context argument that should be an instance of
-Pudl::Context. This class provides a way to share state between tasks and
-actions in the form of a key value store.
-
-The context class is not visible from within defined pipelines. Rather, the
-Pudl::PudlBase class from which Pudl::Pipeline, Pudl::Task and Pudl::Action
-are defined passes method calls through to it, thus simplifying the Pudl
-syntax.
-
-## Basic Use
-
-Context can be accessed from anywhere within the pipeline definition.
-
-``` ruby
-Pudl::Pipeline.new "My Pipeline", Pudl::Context.new() do
-  set :thing, "value"
-
-  task :first_task do
-    puts get(:thing)
-
-    puts 
-  end
-end.run
-```
+Each Pudl Runner class accepts a context argument that should be an
+instance of Pudl::Context. This class provides a way to share state between
+tasks and actions in the form of a key value store.
 
 ## Use in actions
 
-Actions derived from Pudl::Action have access to the context from within
+Actions derived from Pudl::BaseAction have access to the context from within
 their own methods. This means that it is feasible build an action like
 this:
 
 ``` ruby
-Pudl::Pipeline.new "My Pipeline", Pudl::Context.new() do
-
+pipeline "My Pipeline" do
   task :my_task
 
     # Hypothetical database access action
@@ -203,129 +170,57 @@ Pudl::Pipeline.new "My Pipeline", Pudl::Context.new() do
       field "name", :name
     end
   end
-
 end
 ```
+
+## Use in blocks
+
+Most attributes accept context keys as parameters and will do something
+clever with them, either reading a named value from the context at runtime
+else writing a new value to the given key. These attributes can also
+take a block of code.
+
+If the attribute requires a value, the return value of the block is used,
+and if the attribute provides a value it is passed to the block. In
+addition, the methods #get and #set can be used to access the context.
+
+``` ruby
+pipeline "My Pipeline" do
+  task :my_task do
+
+    db "SELECT id, name FROM table WHERE column = value" do
+      action :select_one
+      field "name" do |value|
+        set :name, value.capitalize
+      end
+    end
+
+    context do
+      get :name do |name|
+        # You can use the ruby logger from here too
+        logger.info "The capitalised name is #{name}"
+      end
+    end
+  end
+end
 
 ## Additional Context
 
 It is possible to pass additional data to the context to make it available
-to the pipeline. This is done by passing flags to the Pudl::Pipeline
-constructor. These are made available via accessor methods that match the
-flag names.
+to the pipeline. This is done by accessing the context before calling #run.
 
 ``` ruby
-my_vars = {
-  a_value: "value"
-}
-my_array = [
-  'one',
-  'two',
-  'three'
-]
-context = Pudl::Context.new config: my_vars, params: my_array
+pipeline = Pudl::parse "pipeline.rb"
+runner = pipeline.runner
 
-Pudl::Pipeline.new "My Pipeline", context do
-  task :first_task do
-    # Hashes are exposed by a unary method that accepts the
-    # key to be returned
-    puts config(:a_value)
+# Set some context
+runner.context.set :name, "Joe"
 
-    # Hashes are also exposed as an all_* method to return
-    # the entire hash
-    puts all_config
-
-    # Arrays, scalars and objects are returned as-is
-    puts params[0]
-  end
-end.run
-```
-
-## A Note On Laziness
-
-The Pudl::Action class makes use of lazy evaluation via Pudl::Promise to
-provide a way to pass values around during the parse phase of the pipeline
-definition, but only realise them during the run phase. Consider the
-example of actions using the context.
-
-``` ruby
-Pudl::Pipeline.new "My Pipeline", Pudl::Context.new() do
-
-  task :my_task do
-    db "SELECT id, name FROM table WHERE column = value" do
-      action :select_one
-      field "name", :name
-    end
-  end
-
-  task :output_task do
-    after :my_task
-    db "UPDATE other_table SET name = ${name} WHERE column = value" do
-      action :execute
-
-      # The hypothetical #param method sets the query parameter
-      param "name", lambda { get(:name) }
-  end
-
+# Get all values in the context
+runner.context.values.each do |k, v|
+  puts "#{k} => #{v}"
 end
 ```
-
-The call to `get(:name)` in `:output_task` is passed as a lambda, and it
-wrapped in a promise. When the pipeline is parsed, there is no `:name` key
-in the context. That only appears when the query in `:my_task` is run. When
-the action in `:output_task` is run, however, and the query is parsed,
-there is a `:name` key in the context so the correct value is retrieved.
-
-This does mean that the following limitation exists:
-
-``` ruby
-Pudl::Pipeline.new "My Pipeline", Pudl::Context.new() do
-
-  task :my_task do
-    db "SELECT id, name FROM table WHERE column = value" do
-      action :select_one
-      field "name", :name
-    end
-  end
-
-  task :output_task do
-    after :my_task
-    db "UPDATE other_table SET name = ${name} WHERE column = value" do
-      action :execute
-
-      # This breaks because using the value forces it to be evaluated,
-      # and this key doesn't exist yet
-      param "name", "Name: #{ get(:name) }"
-
-      # The proper way to do it:
-      param "name", lambda { "Name: #{ get(:name) }" }
-    end
-  end
-end
-```
-
-The `param` method of the `db` action must be declared as a
-`hashsetterlazy` command type. This means it accepts a block or lambda that is
-evaluated as late as possible rather then during parsing.
-
-For more information about lazy command types, see Pudl::Action.
-
-An extra nicety is that, if using a lazy command type, the call to get can
-be removed entirely, like this:
-
-``` ruby
-
-    db "UPDATE other_table SET name = ${name} WHERE column = value" do
-      action :execute
-      param "name", :name
-    end
-```
-
-The lazy command types assume that if a symbol is passed in, it refers to a
-context key and retrieves it when the action is run.
-
-For more information see http://moonbase.rydia.net/software/lazy.rb/ and
-Pudl::Action.
 
 # Error Handling
 
@@ -342,7 +237,7 @@ up anything that might get left behind in an error situatation. This is
 done with the `on_error` command.
 
 ``` ruby
-Pudl::Pipeline.new "My Pipeline", Pudl::Context.new() do
+pipeline "My Pipeline" do
 
   task :setup do
     db "create_table.sql" do
@@ -417,4 +312,16 @@ allows a flag to be set to tell it how to behave. The possible options are:
 `:continue`
 : Ignore the error and continue
 
+# And more!
+
+``` ruby
+\#TODO Add more documentation ...
+```
+
+* built in actions
+  * context
+  * ruby
+* extending the DSL with custom methods
+* understanding locking in the context
+* aborting pipeline execution sanely
 
