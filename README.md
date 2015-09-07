@@ -315,7 +315,7 @@ allows a flag to be set to tell it how to behave. The possible options are:
 # And more!
 
 ``` ruby
-\#TODO Add more documentation ...
+#TODO Add more documentation ...
 ```
 
 * built in actions
